@@ -6,14 +6,36 @@ This documentation provides details for using the Payment Links API to create an
 
 ## Authentication
 
-All API requests require authentication using your Commerce credentials (client_id and private_key). These should be sent as HTTP headers with every request:
+All API requests require signature-based authentication using your Commerce credentials. The following headers must be included with every request:
 
 | Header Name | Description |
 |-------------|-------------|
 | `X-Client-ID` | Your Commerce client ID (UUID format) |
-| `X-Private-Key` | Your Commerce private key |
+| `X-Timestamp` | Current Unix timestamp as an integer (seconds since January 1, 1970 UTC) |
+| `X-Signature` | HMAC-SHA256 signature for request verification |
 
-You can find or regenerate these credentials in your Commerce settings.
+**Generating the Signature:**
+
+The signature is created by combining several request elements and signing with your private key:
+
+1. Concatenate the following values:
+   - Request method (GET, POST, etc.)
+   - Request URI (the full path including query parameters)
+   - Timestamp (same integer value as in X-Timestamp header)
+   - Client ID (same as in X-Client-ID header)
+
+2. Create a signature using HMAC-SHA256 with your private key:
+   ```php
+   $data = $requestMethod . $requestUri . $timestamp . $clientId;
+   $signature = hash_hmac('sha256', $data, $privateKey);
+   ```
+
+**Security Notes:**
+- Timestamps are validated to ensure they're within 15 minutes of the server time, preventing replay attacks
+- Your private key is never transmitted over the network
+- Each request has a unique signature based on its content and timing
+
+You can find or regenerate your client ID and private key in your Commerce settings.
 
 ## API Endpoints
 
@@ -25,7 +47,8 @@ Creates a new payment link associated with your Commerce account.
 
 **Headers:**
 - `X-Client-ID`: Your Commerce client ID
-- `X-Private-Key`: Your Commerce private key
+- `X-Timestamp`: Current Unix timestamp
+- `X-Signature`: Request signature
 - `Content-Type: application/json`
 
 **Request Body Parameters:**
@@ -88,7 +111,8 @@ Retrieves detailed information about a specific payment link.
 
 **Headers:**
 - `X-Client-ID`: Your Commerce client ID
-- `X-Private-Key`: Your Commerce private key
+- `X-Timestamp`: Current Unix timestamp
+- `X-Signature`: Request signature
 
 **Parameters:**
 - `id`: The UUID of the payment link

@@ -6,14 +6,36 @@ Esta documentación proporciona detalles para utilizar la API de Enlaces de Pago
 
 ## Autenticación
 
-Todas las solicitudes a la API requieren autenticación utilizando sus credenciales de Comercio (client_id y private_key). Estas deben enviarse como encabezados HTTP con cada solicitud:
+Todas las solicitudes a la API requieren autenticación basada en firma utilizando sus credenciales de Comercio. Los siguientes encabezados deben incluirse con cada solicitud:
 
 | Nombre del Encabezado | Descripción |
 |-------------|-------------|
 | `X-Client-ID` | Su ID de cliente de Comercio (formato UUID) |
-| `X-Private-Key` | Su clave privada de Comercio |
+| `X-Timestamp` | Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC) |
+| `X-Signature` | Firma HMAC-SHA256 para verificación de solicitud |
 
-Puede encontrar o regenerar estas credenciales en su configuración de Comercio.
+**Generando la Firma:**
+
+La firma se crea combinando varios elementos de la solicitud y firmando con su clave privada:
+
+1. Concatene los siguientes valores:
+   - Método de solicitud (GET, POST, etc.)
+   - URI de solicitud (la ruta completa incluyendo parámetros de consulta)
+   - Marca de tiempo (mismo valor entero que en el encabezado X-Timestamp)
+   - ID de cliente (el mismo que en el encabezado X-Client-ID)
+
+2. Cree una firma utilizando HMAC-SHA256 con su clave privada:
+   ```php
+   $data = $metodoSolicitud . $uriSolicitud . $marcaTiempo . $idCliente;
+   $firma = hash_hmac('sha256', $data, $clavePrivada);
+   ```
+
+**Notas de Seguridad:**
+- Las marcas de tiempo se validan para asegurar que estén dentro de los 15 minutos del tiempo del servidor, previniendo ataques de repetición
+- Su clave privada nunca se transmite por la red
+- Cada solicitud tiene una firma única basada en su contenido y tiempo
+
+Puede encontrar o regenerar su ID de cliente y clave privada en su configuración de Comercio.
 
 ## Endpoints de la API
 
@@ -25,7 +47,8 @@ Crea un nuevo enlace de pago asociado a su cuenta de Comercio.
 
 **Encabezados:**
 - `X-Client-ID`: Su ID de cliente de Comercio
-- `X-Private-Key`: Su clave privada de Comercio
+- `X-Timestamp`: Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC)
+- `X-Signature`: Firma de la solicitud
 - `Content-Type: application/json`
 
 **Parámetros del Cuerpo de la Solicitud:**
@@ -88,7 +111,8 @@ Recupera información detallada sobre un enlace de pago específico.
 
 **Encabezados:**
 - `X-Client-ID`: Su ID de cliente de Comercio
-- `X-Private-Key`: Su clave privada de Comercio
+- `X-Timestamp`: Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC)
+- `X-Signature`: Firma de la solicitud
 
 **Parámetros:**
 - `id`: El UUID del enlace de pago
