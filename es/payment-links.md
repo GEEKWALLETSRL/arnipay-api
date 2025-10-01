@@ -14,26 +14,37 @@ Todas las solicitudes a la API requieren autenticación basada en firma utilizan
 | `X-Timestamp` | Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC) |
 | `X-Signature` | Firma HMAC-SHA256 para verificación de solicitud |
 
-**Generando la Firma:**
+Las solicitudes expiran a los 15 minutos desde el valor indicado en `X-Timestamp`.
 
-La firma se crea combinando varios elementos de la solicitud y firmando con su clave privada:
+**Cadena canónica y generación de firma (usada para API y webhooks):**
 
-1. Concatene los siguientes valores:
-   - Método de solicitud (GET, POST, etc.)
-   - URI de solicitud (la ruta completa incluyendo parámetros de consulta)
-   - Marca de tiempo (mismo valor entero que en el encabezado X-Timestamp)
-   - ID de cliente (el mismo que en el encabezado X-Client-ID)
+1. Construya los componentes canónicos:
+   1. Método HTTP en mayúsculas (por ejemplo `GET`, `POST`)
+   2. URI (solo path + query; sin esquema/host), p. ej. `/api/v1/payment?id=123`
+   3. Marca de tiempo Unix (mismo entero que en el encabezado `X-Timestamp`)
+   4. Identificador estable (mismo valor que `X-Client-ID`)
+   5. Hash SHA-256 del cuerpo en base64: `base64(sha256(raw_body))`. Para solicitudes sin cuerpo use `base64(sha256(""))`
 
-2. Cree una firma utilizando HMAC-SHA256 con su clave privada:
+2. Una los componentes con saltos de línea `"\n"` para formar la cadena canónica.
+
+3. Calcule la firma con HMAC-SHA256 usando su clave secreta:
    ```php
-   $data = $metodoSolicitud . $uriSolicitud . $marcaTiempo . $idCliente;
-   $firma = hash_hmac('sha256', $data, $clavePrivada);
+   $metodo = strtoupper($metodoSolicitud);
+   $uri = $rutaConQuery; // path + query, sin esquema/host
+   $marcaTiempo = (string) $timestampUnix;
+   $idCliente = $xClientId;
+   $cuerpoCrudo = $cuerpoCrudoSolicitud; // exactamente como se envía por la red
+   $hashCuerpo = base64_encode(hash('sha256', $cuerpoCrudo, true));
+   $canonica = implode("\n", [$metodo, $uri, $marcaTiempo, $idCliente, $hashCuerpo]);
+   $firma = hash_hmac('sha256', $canonica, $clavePrivada);
    ```
 
+4. Envíe y firme cuerpos JSON sin escapes extra usando `json_encode` con `JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE` para que el cuerpo crudo coincida con lo que verifica el servidor.
+
 **Notas de Seguridad:**
-- Las marcas de tiempo se validan para asegurar que estén dentro de los 15 minutos del tiempo del servidor, previniendo ataques de repetición
-- Su clave privada nunca se transmite por la red
-- Cada solicitud tiene una firma única basada en su contenido y tiempo
+- Las solicitudes son válidas solo dentro de los 15 minutos del `X-Timestamp` para prevenir ataques de repetición
+- Su secreto nunca se transmite por la red
+- El hash del cuerpo garantiza la integridad del payload incluso con encabezados idénticos
 
 Puede encontrar o regenerar su ID de cliente y clave privada en su configuración de Comercio.
 
@@ -47,8 +58,8 @@ Crea un nuevo enlace de pago asociado a su cuenta de Comercio.
 
 **Encabezados:**
 - `X-Client-ID`: Su ID de cliente de Comercio
-- `X-Timestamp`: Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC)
-- `X-Signature`: Firma de la solicitud
+- `X-Timestamp`: Marca de tiempo Unix actual (segundos)
+- `X-Signature`: Firma de la solicitud (HMAC-SHA256 sobre cadena canónica)
 - `Content-Type: application/json`
 
 **Parámetros del Cuerpo de la Solicitud:**
@@ -111,8 +122,8 @@ Recupera información detallada sobre un enlace de pago específico.
 
 **Encabezados:**
 - `X-Client-ID`: Su ID de cliente de Comercio
-- `X-Timestamp`: Marca de tiempo Unix actual como entero (segundos desde el 1 de enero de 1970 UTC)
-- `X-Signature`: Firma de la solicitud
+- `X-Timestamp`: Marca de tiempo Unix actual (segundos)
+- `X-Signature`: Firma de la solicitud (HMAC-SHA256 sobre cadena canónica)
 
 **Parámetros:**
 - `id`: El UUID del enlace de pago
@@ -231,30 +242,37 @@ Para recibir notificaciones webhook, configure su URL de webhook y ajustes en su
 
 ### Seguridad de Webhook
 
-Para garantizar la seguridad de las notificaciones webhook, incluimos una firma en el encabezado `X-Webhook-Signature` de cada solicitud webhook. Esta firma se genera utilizando HMAC con SHA-256 y su secreto de webhook:
+Las solicitudes de webhook se firman usando las mismas reglas de cadena canónica que las solicitudes de API e incluyen estos encabezados:
 
-```
-X-Webhook-Signature: sha256=HMAC-SHA256(webhook_secret, payload)
-```
+- `X-Client-ID`
+- `X-Timestamp`
+- `X-Signature`
+- `X-Webhook-ID` (identificador único del webhook entregado)
 
-Para verificar la autenticidad de una notificación webhook:
+Para verificar un webhook:
 
-1. Obtenga la firma del encabezado `X-Webhook-Signature`
-2. Calcule el HMAC-SHA256 de la carga útil sin procesar utilizando su secreto de webhook
-3. Compare la firma calculada con la del encabezado
+1. Lea el cuerpo crudo exactamente como se recibió y calcule `base64(sha256(raw_body))`
+2. Construya la cadena canónica con: método HTTP en mayúsculas, URI (path + query), `X-Timestamp`, `X-Client-ID` y el hash del cuerpo en base64
+3. Calcule el HMAC-SHA256 con su secreto de webhook y compare con `X-Signature`
 
 Ejemplo de verificación en PHP:
 
 ```php
-$payload = file_get_contents('php://input');
-$signature = $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? '';
-$expectedSignature = 'sha256=' . hash_hmac('sha256', $payload, $webhookSecret);
+$cuerpoCrudo = file_get_contents('php://input');
+$timestamp = $_SERVER['HTTP_X_TIMESTAMP'] ?? '';
+$clientId = $_SERVER['HTTP_X_CLIENT_ID'] ?? '';
+$firma = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+$metodo = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'POST');
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$query = $_SERVER['QUERY_STRING'] ?? '';
+if ($query !== '') {
+    $uri .= '?' . $query;
+}
+$hashCuerpo = base64_encode(hash('sha256', $cuerpoCrudo, true));
+$canonica = implode("\n", [$metodo, $uri, $timestamp, $clientId, $hashCuerpo]);
+$esperada = hash_hmac('sha256', $canonica, $webhookSecret);
 
-if (hash_equals($expectedSignature, $signature)) {
-    // El webhook es auténtico
-    // Procesar el webhook
-} else {
-    // La verificación del webhook falló
+if (!hash_equals($esperada, $firma)) {
     http_response_code(403);
     exit('Firma inválida');
 }

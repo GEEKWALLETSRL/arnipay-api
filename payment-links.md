@@ -14,26 +14,37 @@ All API requests require signature-based authentication using your Commerce cred
 | `X-Timestamp` | Current Unix timestamp as an integer (seconds since January 1, 1970 UTC) |
 | `X-Signature` | HMAC-SHA256 signature for request verification |
 
-**Generating the Signature:**
+Requests expire 15 minutes from the time indicated by `X-Timestamp`.
 
-The signature is created by combining several request elements and signing with your private key:
+**Canonical string and signature generation (used for both API and webhooks):**
 
-1. Concatenate the following values:
-   - Request method (GET, POST, etc.)
-   - Request URI (the full path including query parameters)
-   - Timestamp (same integer value as in X-Timestamp header)
-   - Client ID (same as in X-Client-ID header)
+1. Build the canonical components:
+   1. Uppercased HTTP method (e.g. `GET`, `POST`)
+   2. URI (path + query only; no scheme/host), e.g. `/api/v1/payment?id=123`
+   3. Unix timestamp (same integer value as in the `X-Timestamp` header)
+   4. Stable identifier (same value as `X-Client-ID`)
+   5. Base64-encoded SHA-256 hash of the raw request body: `base64(sha256(raw_body))`. For requests without a body use `base64(sha256(""))`
 
-2. Create a signature using HMAC-SHA256 with your private key:
+2. Join the components with newline characters `"\n"` to form the canonical string.
+
+3. Compute the signature with HMAC-SHA256 using your secret key:
    ```php
-   $data = $requestMethod . $requestUri . $timestamp . $clientId;
-   $signature = hash_hmac('sha256', $data, $privateKey);
+   $method = strtoupper($requestMethod);
+   $uri = $requestPathWithQuery; // path + query, no scheme/host
+   $timestamp = (string) $unixTimestamp;
+   $clientId = $xClientId;
+   $rawBody = $requestRawBody; // exactly as sent over the wire
+   $bodyHash = base64_encode(hash('sha256', $rawBody, true));
+   $canonical = implode("\n", [$method, $uri, $timestamp, $clientId, $bodyHash]);
+   $signature = hash_hmac('sha256', $canonical, $privateKey);
    ```
 
+4. Send JSON bodies without extra escaping using `json_encode` with `JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE` so the raw body matches what the server verifies.
+
 **Security Notes:**
-- Timestamps are validated to ensure they're within 15 minutes of the server time, preventing replay attacks
-- Your private key is never transmitted over the network
-- Each request has a unique signature based on its content and timing
+- Requests are valid only within 15 minutes of the `X-Timestamp` to prevent replay attacks
+- Your secret is never transmitted over the network
+- The body hash ensures integrity of the payload even with identical headers
 
 You can find or regenerate your client ID and private key in your Commerce settings.
 
@@ -47,8 +58,8 @@ Creates a new payment link associated with your Commerce account.
 
 **Headers:**
 - `X-Client-ID`: Your Commerce client ID
-- `X-Timestamp`: Current Unix timestamp
-- `X-Signature`: Request signature
+- `X-Timestamp`: Current Unix timestamp (seconds)
+- `X-Signature`: Request signature (HMAC-SHA256 over canonical string)
 - `Content-Type: application/json`
 
 **Request Body Parameters:**
@@ -111,8 +122,8 @@ Retrieves detailed information about a specific payment link.
 
 **Headers:**
 - `X-Client-ID`: Your Commerce client ID
-- `X-Timestamp`: Current Unix timestamp
-- `X-Signature`: Request signature
+- `X-Timestamp`: Current Unix timestamp (seconds)
+- `X-Signature`: Request signature (HMAC-SHA256 over canonical string)
 
 **Parameters:**
 - `id`: The UUID of the payment link
@@ -231,30 +242,37 @@ To receive webhook notifications, configure your webhook URL and settings in you
 
 ### Webhook Security
 
-To ensure the security of webhook notifications, we include a signature in the `X-Webhook-Signature` header of each webhook request. This signature is generated using HMAC with SHA-256 and your webhook secret:
+Webhook requests are signed using the same canonical string rules as API requests and include these headers:
 
-```
-X-Webhook-Signature: sha256=HMAC-SHA256(webhook_secret, payload)
-```
+- `X-Client-ID`
+- `X-Timestamp`
+- `X-Signature`
+- `X-Webhook-ID` (unique identifier for the webhook delivery)
 
-To verify the authenticity of a webhook notification:
+To verify a webhook:
 
-1. Get the signature from the `X-Webhook-Signature` header
-2. Compute the HMAC-SHA256 of the raw payload using your webhook secret
-3. Compare the computed signature with the one in the header
+1. Read the raw body exactly as received and compute `base64(sha256(raw_body))`
+2. Build the canonical string using: uppercased HTTP method, request URI (path + query), `X-Timestamp`, `X-Client-ID`, and the base64 body hash
+3. Compute the HMAC-SHA256 with your webhook secret and compare to `X-Signature`
 
 Example verification in PHP:
 
 ```php
-$payload = file_get_contents('php://input');
-$signature = $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? '';
-$expectedSignature = 'sha256=' . hash_hmac('sha256', $payload, $webhookSecret);
+$rawBody = file_get_contents('php://input');
+$timestamp = $_SERVER['HTTP_X_TIMESTAMP'] ?? '';
+$clientId = $_SERVER['HTTP_X_CLIENT_ID'] ?? '';
+$signature = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+$method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'POST');
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$query = $_SERVER['QUERY_STRING'] ?? '';
+if ($query !== '') {
+    $uri .= '?' . $query;
+}
+$bodyHash = base64_encode(hash('sha256', $rawBody, true));
+$canonical = implode("\n", [$method, $uri, $timestamp, $clientId, $bodyHash]);
+$expected = hash_hmac('sha256', $canonical, $webhookSecret);
 
-if (hash_equals($expectedSignature, $signature)) {
-    // Webhook is authentic
-    // Process the webhook
-} else {
-    // Webhook verification failed
+if (!hash_equals($expected, $signature)) {
     http_response_code(403);
     exit('Invalid signature');
 }
