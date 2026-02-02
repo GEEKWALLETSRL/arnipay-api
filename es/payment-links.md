@@ -159,6 +159,43 @@ Recupera información detallada sobre un enlace de pago específico.
 - `401 Unauthorized`: Credenciales de autenticación inválidas o faltantes
 - `404 Not Found`: Enlace de pago no encontrado
 
+### Obtener Métodos de Pago
+
+Obtiene una lista de métodos de pago disponibles.
+
+**Endpoint:** `GET https://arnipay.com.py/api/v1/payment_methods`
+
+**Encabezados:**
+- `X-Client-ID`: Su ID de cliente de Comercio
+- `X-Timestamp`: Marca de tiempo Unix actual (segundos)
+- `X-Signature`: Firma de la solicitud (HMAC-SHA256 sobre cadena canónica)
+
+**Respuesta Exitosa (200 OK):**
+
+```json
+{
+    "status": "success",
+    "data": [
+        {
+            "code": "qr",
+            "name": "Código QR"
+        },
+        {
+            "code": "tigo",
+            "name": "Tigo"
+        },
+        {
+            "code": "personal",
+            "name": "Personal"
+        }
+    ]
+}
+```
+
+**Respuestas de Error:**
+
+- `401 Unauthorized`: Credenciales de autenticación inválidas o faltantes
+
 ## Manejo de Errores
 
 La API devuelve códigos de estado HTTP estándar para indicar éxito o fracaso:
